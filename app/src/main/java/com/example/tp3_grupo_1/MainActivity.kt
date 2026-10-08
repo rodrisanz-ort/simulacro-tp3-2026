@@ -14,6 +14,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
+import com.example.tp3_grupo_1.data.local.AppDataStore
+import com.example.tp3_grupo_1.data.local.AppDatabase
+import com.example.tp3_grupo_1.data.local.FavoritesRepository
 import com.example.tp3_grupo_1.data.remote.QuotesRepository
 import com.example.tp3_grupo_1.model.Quote
 import androidx.navigation.compose.NavHost
@@ -45,18 +49,28 @@ private fun AppNavigation() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val quotesRepository = remember { QuotesRepository() }
-    var users by remember { mutableStateOf(mapOf<String, String>()) }
+    val appDataStore = remember { AppDataStore(context.applicationContext) }
+    val database = remember {
+        androidx.room.Room.databaseBuilder(
+            context.applicationContext,
+            AppDatabase::class.java,
+            "app.db"
+        ).fallbackToDestructiveMigration().build()
+    }
+    val favoritesRepository = remember { FavoritesRepository(database.favoriteQuoteDao()) }
+    var currentUser by remember { mutableStateOf<String?>(null) }
+    var sessionLoaded by remember { mutableStateOf(false) }
     var favorites by remember { mutableStateOf(emptyList<Quote>()) }
-    var quotes by remember { mutableStateOf(emptyList<Quote>()) }
+    var currentQuote by remember { mutableStateOf<Quote?>(null) }
     var quotesLoading by remember { mutableStateOf(true) }
     var quotesError by remember { mutableStateOf<String?>(null) }
 
-    suspend fun loadQuotes() {
+    suspend fun loadQuote() {
         quotesLoading = true
         quotesError = null
-        quotesRepository.getQuotes()
-            .onSuccess { loadedQuotes ->
-                quotes = loadedQuotes
+        quotesRepository.getRandomQuote()
+            .onSuccess { loadedQuote ->
+                currentQuote = loadedQuote
                 quotesLoading = false
             }
             .onFailure { error ->
@@ -66,28 +80,48 @@ private fun AppNavigation() {
     }
 
     LaunchedEffect(Unit) {
-        loadQuotes()
+        currentUser = appDataStore.getSession()
+        if (currentUser != null) {
+            favorites = favoritesRepository.getFavorites(currentUser!!)
+        }
+        sessionLoaded = true
+        quotesLoading = false
+    }
+
+    LaunchedEffect(currentUser, sessionLoaded) {
+        if (sessionLoaded && currentUser != null) {
+            loadQuote()
+        }
+    }
+
+    if (!sessionLoaded) {
+        return
     }
 
     NavHost(
         navController = navController,
-        startDestination = Screen.Login.route
+        startDestination = if (currentUser == null) Screen.Login.route else Screen.Quote.route
     ) {
         composable(Screen.Login.route) {
             Login(
                 onRegisterClick = { navController.navigate(Screen.Register.route) },
                 onRecoverClick = { navController.navigate(Screen.Recover.route) },
                 onLoginClick = { email, password ->
-                    if (users[email] == password) {
-                        navController.navigate(Screen.Quote.route) {
-                            popUpTo(Screen.Login.route) { inclusive = true }
+                    scope.launch {
+                        if (appDataStore.isValidUser(email, password.sha256())) {
+                            currentUser = email
+                            favorites = favoritesRepository.getFavorites(email)
+                            appDataStore.saveSession(email)
+                            navController.navigate(Screen.Quote.route) {
+                                popUpTo(Screen.Login.route) { inclusive = true }
+                            }
+                        } else {
+                            Toast.makeText(
+                                context,
+                                "Email o contraseña incorrectos",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
-                    } else {
-                        Toast.makeText(
-                            context,
-                            "Email o contraseña incorrectos",
-                            Toast.LENGTH_SHORT
-                        ).show()
                     }
                 }
             )
@@ -96,20 +130,21 @@ private fun AppNavigation() {
             Register(
                 onBackClick = { navController.popBackStack() },
                 onRegisterClick = { email, password ->
-                    if (users.containsKey(email)) {
-                        Toast.makeText(
-                            context,
-                            "Ese email ya está registrado",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        users = users + (email to password)
-                        Toast.makeText(
-                            context,
-                            "Cuenta creada. Iniciá sesión",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        navController.popBackStack()
+                    scope.launch {
+                        if (appDataStore.register(email, password.sha256())) {
+                            Toast.makeText(
+                                context,
+                                "Cuenta creada. Iniciá sesión",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            navController.popBackStack()
+                        } else {
+                            Toast.makeText(
+                                context,
+                                "Ese email ya está registrado",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
                 }
             )
@@ -119,7 +154,7 @@ private fun AppNavigation() {
         }
         composable(Screen.Quote.route) {
             Frases(
-                quotes = quotes,
+                quote = currentQuote,
                 isLoading = quotesLoading,
                 errorMessage = quotesError,
                 favoriteIds = favorites.map { it.id }.toSet(),
@@ -129,9 +164,29 @@ private fun AppNavigation() {
                     } else {
                         favorites.filterNot { it.id == quote.id }
                     }
+                    currentUser?.let { email ->
+                        scope.launch {
+                            if (isFavorite) {
+                                favoritesRepository.add(email, quote)
+                            } else {
+                                favoritesRepository.remove(email, quote)
+                            }
+                        }
+                    }
                 },
                 onFavoritesClick = { navController.navigate(Screen.Favorites.route) },
-                onRetryClick = { scope.launch { loadQuotes() } }
+                onLogoutClick = {
+                    scope.launch {
+                        appDataStore.clearSession()
+                        currentUser = null
+                        favorites = emptyList()
+                        navController.navigate(Screen.Login.route) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    }
+                },
+                onRetryClick = { scope.launch { loadQuote() } },
+                onNextQuoteClick = { scope.launch { loadQuote() } }
             )
         }
         composable(Screen.Favorites.route) {
@@ -139,9 +194,17 @@ private fun AppNavigation() {
                 quotes = favorites,
                 onDeleteClick = { quote ->
                     favorites = favorites.filterNot { it.id == quote.id }
+                    currentUser?.let { email ->
+                        scope.launch { favoritesRepository.remove(email, quote) }
+                    }
                 },
                 onBackClick = { navController.popBackStack() }
             )
         }
     }
+}
+
+private fun String.sha256(): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(toByteArray())
+    return digest.joinToString("") { "%02x".format(it) }
 }

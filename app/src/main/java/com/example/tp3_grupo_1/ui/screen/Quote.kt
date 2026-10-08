@@ -27,21 +27,21 @@ import com.example.tp3_grupo_1.ui.theme.TP3Grupo1Theme
 
 @Composable
 fun Frases(
-    quotes: List<Quote> = emptyList(),
+    quote: Quote? = null,
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onFavoritesClick: () -> Unit = {},
+    onLogoutClick: () -> Unit = {},
     favoriteIds: Set<String> = emptySet(),
     onFavoriteChanged: (Quote, Boolean) -> Unit = { _, _ -> },
-    onRetryClick: () -> Unit = {}
+    onRetryClick: () -> Unit = {},
+    onNextQuoteClick: () -> Unit = {}
 ) {
-    var quoteNumber by rememberSaveable { mutableStateOf(0) }
-
     if (isLoading) {
         LoadingQuotes()
         return
     }
-    if (errorMessage != null || quotes.isEmpty()) {
+    if (errorMessage != null || quote == null) {
         ErrorQuotes(
             message = errorMessage ?: "No se encontraron frases",
             onRetryClick = onRetryClick
@@ -49,18 +49,15 @@ fun Frases(
         return
     }
 
-    if (quoteNumber >= quotes.size) quoteNumber = 0
-    val quote = quotes[quoteNumber]
     val isFavorite = quote.id in favoriteIds
 
     QuoteScreen(
         quote = quote,
         isFavorite = isFavorite,
         onFavoriteClick = { onFavoriteChanged(quote, !isFavorite) },
-        onNextQuoteClick = {
-            quoteNumber = (quoteNumber + 1) % quotes.size
-        },
-        onFavoritesClick = onFavoritesClick
+        onNextQuoteClick = onNextQuoteClick,
+        onFavoritesClick = onFavoritesClick,
+        onLogoutClick = onLogoutClick
     )
 }
 
@@ -102,6 +99,7 @@ fun QuoteScreen(
     onFavoriteClick: () -> Unit,
     onNextQuoteClick: () -> Unit,
     onFavoritesClick: () -> Unit,
+    onLogoutClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -151,6 +149,10 @@ fun QuoteScreen(
                 Text("Favoritos")
             }
         }
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedButton(onClick = onLogoutClick) {
+            Text("Cerrar sesión")
+        }
     }
 }
 
@@ -159,13 +161,11 @@ fun QuoteScreen(
 private fun QuotePreview() {
     TP3Grupo1Theme {
         Frases(
-            quotes = listOf(
-                Quote(
-                    "1",
-                    "La mejor manera de predecir el futuro es crearlo.",
-                    "Peter Drucker",
-                    "Motivación"
-                )
+            quote = Quote(
+                "1",
+                "La mejor manera de predecir el futuro es crearlo.",
+                "Peter Drucker",
+                "Motivación"
             )
         )
     }
